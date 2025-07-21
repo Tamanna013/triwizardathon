@@ -1,4 +1,8 @@
 #In case if you want to run this file, you will need two files, .env. I will send that to ya'll personally
+#STEPS TO RUN THE CODE
+#1. RUN pip install -r requirements.txt
+#2. RUN python backend.py
+
 
 import os
 from bs4 import BeautifulSoup
