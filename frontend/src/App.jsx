@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import Header from './components/Header';
 import ScanSection from './components/ScanSection';
 import Dashboard from './components/Dashboard';
@@ -12,33 +12,81 @@ function App() {
   const handleScan = async (inputUrl) => {
     setIsScanning(true);
     setUrl(inputUrl);
+//changes made to send the url input to the main.py backend to test blip
+    try {
+      const response = await fetch('http://127.0.0.1:8000/generate-alt-text', {
 
-    setTimeout(() => {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: inputUrl }),
+      });
+
+      const data = await response.json();
+
+      if (data.uncaptioned_images) {
+  const uncaptioned = data.uncaptioned_images.length;
+  const total = (data.captioned_images?.length || 0) + uncaptioned;
+
+  const issues = data.uncaptioned_images.map((item, index) => ({
+    id: index + 1,
+    type: 'error',
+    severity: 'high',
+    title: 'Missing Alt Text',
+    description: 'Images without alternative text are not accessible to screen readers.',
+    element: `<img src="${item.img_url}">`,
+    suggestion: `Add descriptive alt text: <img src="${item.img_url}" alt="${item.caption}">`,
+    count: 1
+  }));
+
+  const calculatedScore = total === 0 ? 100 : Math.round(((total - uncaptioned) / total) * 100);
+
+  setScanResults({
+    url: inputUrl,
+    score: calculatedScore,
+    issues: issues,
+    totalIssues: issues.length,
+    scanTime: '-'
+  });
+}
+
+
+      else if (data.message === "All images on this page have alt text.") {
+      
       setScanResults({
         url: inputUrl,
-        score: 85,
-        issues: [
-          {
-            id: 1,
-            type: 'error',
-            severity: 'high',
-            title: 'Missing Alt Text',
-            description: 'Images without alternative text are not accessible to screen readers.',
-            element: '<img src="hero.jpg">',
-            suggestion: 'Add descriptive alt text: <img src="hero.jpg" alt="Team collaboration in modern office">',
-            count: 3
-          }
-          // Issues will go here
-        ],
-        totalIssues: 11,
-        scanTime: '2.3s'
+        score: 100,
+        issues: [],
+        totalIssues: 0,
+        scanTime: '-'
       });
+    }
+    } catch (err) {
+      console.error(err);
+      setScanResults({
+        url: inputUrl,
+        score: 0,
+        issues: [{
+          id: 1,
+          type: 'error',
+          severity: 'high',
+          title: 'Server Error',
+          description: 'Could not connect to backend or process request.',
+          element: '',
+          suggestion: 'Check backend server or URL input.',
+          count: 1
+        }],
+        totalIssues: 1,
+        scanTime: '-'
+      });
+    } finally {
       setIsScanning(false);
-    }, 3000);
+    }
   };
 
   return (
-    <div className="min-h-screen relative"> 
+    <div className="min-h-screen relative">
       <AnimatedBackground />
       <div className="relative z-10">
         <Header />
