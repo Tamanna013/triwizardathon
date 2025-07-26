@@ -14,6 +14,11 @@ from langgraph.graph import StateGraph
 from langchain_core.runnables import RunnableLambda
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
+from image_checker import find_uncaptioned_images
+from blip_captioner import generate_caption
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # Windows event loop policy (if needed)
 if sys.platform == "win32":
@@ -33,6 +38,9 @@ class GraphState(TypedDict):
 # FastAPI model
 class URLRequest(BaseModel):
     url: str
+    
+class URLInput(BaseModel):
+    url:str
 
 # FastAPI app
 api = FastAPI()
@@ -67,28 +75,79 @@ def analyze_node(state: dict) -> dict:
     )
 
     prompt = f"""
-You are an expert in web accessibility.
+You are a strict and detail-oriented web accessibility auditor.
 
-Analyze the following web page and return ONLY a valid JSON object (no markdown, no prose, no preamble) with:
-
+Analyze the given web page and return **only** a valid, parsable JSON object (no markdown, no prose, no extra text) strictly in the following format:
 
 {{
-  "score": integer (0–100),
+  "score": integer (0 to 100),
   "totalIssues": integer,
   "scanTime": string (e.g., "2.3s"),
   "issues": [
     {{
-      "id": integer,
-      "type": "critical: | "moderate" | "low" ,
-      "severity": "high" | "medium" | "low",
-      "title": string,
-      "description": string,
-      "element": string,
-      "suggestion": string,
-      "count": integer
+      "id": integer (unique per issue),
+      "type": one of ["critical", "moderate", "low"],
+      "severity": one of ["high", "medium", "low"],
+      "title": string (short, specific summary of the issue),
+      "description": string (clear explanation of the issue including the exact line number in the HTML source where it occurs),
+      "element": string (HTML tag, selector, or code fragment involved),
+      "suggestion": string (a precise and practical fix, ideally WCAG-aligned),
+      "count": integer (number of occurrences of this issue)
     }}
   ]
 }}
+
+For each issue, include the most relevant WCAG 2.1 reference in the "wcagReference" field using this format:
+"WCAG 2.1 AA - [Success Criterion Number] [Success Criterion Name]"
+
+Examples:
+- Missing alt attribute on image → "WCAG 2.1 AA - 1.1.1 Non-text Content"
+- Insufficient contrast → "WCAG 2.1 AA - 1.4.3 Contrast (Minimum)"
+- Missing form label → "WCAG 2.1 AA - 1.3.1 Info and Relationships"
+- Non-keyboard accessible element → "WCAG 2.1 AA - 2.1.1 Keyboard"
+
+Only include **one most relevant** reference per issue.
+Do not invent or hallucinate WCAG references, line numbers, or issues that are not present.
+
+**Strict rules**
+- Output **must** be valid JSON. Do not include markdown, prose, comments, or code outside the JSON structure.
+- For each issue, the `"element"` field must **explicitly show** the problematic or insufficient part of the HTML code or selector (e.g., `<img src='...' />` missing alt, or `div[role="button"]` with no keyboard handler).
+- Suggestions must be **clear and directly actionable** — not generic advice.
+- When mentioning line numbers in the description, provide the approximate line number as per the HTML source. If exact line number is not clear, specify as “approximate line X”.
+- For missing alt text issues on `<img>` tags, **only report images with common raster formats:** jpg, jpeg, png, gif, bmp, webp.
+- For missing alt text, if it is a logo, mention it in the title
+- Do **not** report missing alt text issues for images with uncommon or vector formats such as svg, xml, ico, or data URIs.
+- Do **not** fabricate issues. Only report genuine accessibility problems found in the provided HTML.
+- Group identical issues by type and element. Use count to indicate total occurrences. Do not list duplicates as separate entries.
+
+**Severity classification rules:**
+- **High severity**: Issues that cause major barriers to users with disabilities. Examples include missing alt text on meaningful images, missing labels on form inputs, keyboard inaccessibility, or content that cannot be perceived or operated by assistive technologies.
+- **Medium severity**: Issues that impact usability but have possible workarounds or are less critical. Examples include insufficient color contrast that affects some users, unclear link text, or missing landmarks that complicate navigation but do not prevent it.
+- **Low severity**: Minor issues or best practice improvements that have minimal impact on accessibility. Examples include missing page titles, redundant ARIA attributes, or minor semantic markup errors that don't affect usability significantly.
+
+**Scoring Instructions**
+- The score is an integer between 0 and 100, representing overall accessibility compliance.
+- Critical issues reduce the score the most, moderate issues reduce it moderately, and low issues reduce it slightly.
+- Start with a base score of 100.
+- For each issue occurrence, subtract points as follows:
+    - critical: subtract 15 points per occurrence,
+    - moderate: subtract 7 points per occurrence,
+    - low: subtract 3 points per occurrence.
+- Calculate the score before clamping in "scoreBeforeClamp".
+- Final score = max(0, scoreBeforeClamp), rounded to nearest integer.
+- Report counts of each severity in "calculationDetails".
+- Include a "calculationDetails" object in the output JSON with:
+  {{
+    "criticalCount": int,
+    "moderateCount": int,
+    "lowCount": int,
+    "rawScore": int,
+    "finalScore": int
+  }}
+- finalScore in "calculationDetails" must be equal to the "score" field.
+- If no issues, score = 100.
+
+Start your analysis now.
 
 Content:
 {state['content']}
@@ -142,3 +201,26 @@ async def check_accessibility(request: URLRequest):
             "error": str(e),
             "trace": traceback.format_exc()
         }
+        
+@api.post("/generate-alt-text")
+
+def generate_alt_text(data:URLInput):
+    url=data.url.strip()
+
+    try:
+        images= find_uncaptioned_images(url)
+    except Exception as e:
+        return{"error":f"Failed to crawl the site:{str(e)}"}
+    
+    if not images:
+        return{"message":"All images on this page have alt text."}
+    
+    result=[]
+
+    for img_url in images:
+        try:
+            caption=generate_caption(img_url)
+            result.append({"img_url":img_url, "caption":caption})
+        except Exception as e:
+            result.append({"img_url":img_url, "caption":f"Failed:{str(e)}"})
+    return {"uncaptioned_images":result}
