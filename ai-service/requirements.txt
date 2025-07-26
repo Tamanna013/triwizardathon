@@ -5,3 +5,12 @@ langchain-groq
 playwright
 bs4
 python-dotenv
+transformers
+torch
+Pillow
+requests
+beautifulsoup4
+uvicorn 
+file-saver
+jspdf
+jspdf-autotable
